@@ -5,9 +5,75 @@
 //  Created by 招利 李 on 14-6-27.
 //  Copyright (c) 2014年 慧趣工作室. All rights reserved.
 //
+//  引用 libsqlite.3.0.dylib
+//  需要建立 ProjectName-Bridging-Header.h 桥文件,并写下 #import "sqlite3.h"
+//
+//  使用例子如下 : (OS X 开发也可以用)
+//
+////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//    extension ViewController : SQLiteDelegate {
+//        func create(handle:COpaquePointer, sqlite:SQLite) {
+//            //创建电脑表
+//            sqlite.create(handle,
+//                tableName: "Computer",
+//                params:    [.SQL_Int    ("cid",  .SQL_PrimaryKeyAutoincrement),
+//                            .SQL_String ("brand",.SQL_NotNull),
+//                            .SQL_Int    ("cpu", .SQL_NotNull)])
+//            //创建处理器表
+//            sqlite.create(handle,
+//                tableName: "CPU",
+//                params:    [.SQL_Int    ("uid",  .SQL_PrimaryKeyAutoincrement),
+//                            .SQL_String ("firm",.SQL_NotNull)])
+//            //创建使用者表
+//            sqlite.create(handle,
+//                tableName: "Preson",
+//                params:    [.SQL_Int    ("pid",  .SQL_PrimaryKeyAutoincrement),
+//                            .SQL_String ("name",.SQL_NotNull),
+//                            .SQL_Int    ("computer",.SQL_Default)])
+//            
+//            sqlite.insert(handle, tableName: "CPU", params:["firm":"AMD"])
+//            sqlite.insert(handle, tableName: "CPU", params:["firm":"Intel"])
+//            
+//            sqlite.insert(handle, tableName: "Computer", params:["brand":"Apple", "cpu":2])
+//            sqlite.insert(handle, tableName: "Computer", params:["brand":"Hp", "cpu":1])
+//            sqlite.insert(handle, tableName: "Computer", params:["brand":"Dell", "cpu":2])
+//            
+//            sqlite.insert(handle, tableName: "Preson", params:["name":"lzl", "computer":1])
+//            sqlite.insert(handle, tableName: "Preson", params:["name":"lc", "computer":1])
+//            sqlite.insert(handle, tableName: "Preson", params:["name":"jc", "computer":1])
+//            sqlite.insert(handle, tableName: "Preson", params:["name":"gd", "computer":2])
+//            
+//            println("插入完成")
+//            
+//        }
+//    }
+//
+/////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//  在需要查询的时候代码如下
+//
+//  let sqlite = SQLite(path:"/Users/apple/Documents/test.sqlite",delegate:self)
+//
+//  let (handle,_) = sqlite.open()
+//  let count = sqlite.count(handle,tableName: "Preson", Where: "computer = 1")
+//  println("有苹果电脑的人数为\(count)")
+//
+//  //查询所有电脑品牌为 Apple的数据
+//  if let rs = sqlite.select(handle,params:nil, tables: ["p":"Preson","cp":"Computer","c":"CPU"], Where: "p.computer = cp.cid AND cp.cpu = c.uid AND p.computer = 1") {
+//      println("查询成功")
+//      while rs.next {
+//          let dict = rs.getDictionary()
+//          println("data:\(dict)")
+//      }
+//    
+//  } else {
+//      println("查询失败")
+//  }
+//
+
 
 import Foundation
-//@asmname("sqlite3_exec") func sqlite3_execute(COpaquePointer,CString,COpaquePointer,AnyObject,COpaquePointer) -> CInt
 
 //结果集
 protocol SQLiteRowSet {
@@ -26,9 +92,9 @@ protocol SQLiteRowSet {
 
 //常用
 protocol SQLiteUtils {
-    //打开并获取数据库接口
+    //打开并获取数据库句柄
     func open() -> (COpaquePointer, NSError?)
-    //关闭数据库接口
+    //关闭数据库句柄
     func close(handle:COpaquePointer) -> NSError?
     //执行 SQL 语句
     func execute(handle:COpaquePointer, SQL:String) -> NSError?
@@ -38,13 +104,15 @@ protocol SQLiteUtils {
     func lastErrorString(handle:COpaquePointer) -> String
 }
 
-//代理
-protocol SQLiteDelegate {
-    func create(handle:COpaquePointer, sqlite:SQLite)      //<-需要创建所有的表
+//代理 @objc 表示可选
+@objc protocol SQLiteDelegate {
+    @optional func create(handle:COpaquePointer, sqlite:SQLite)      //<-需要创建所有的表
 }
 
 //创建
 protocol SQLiteCreate {
+    func create(handle:COpaquePointer, tableName:String, params:Array<SQLiteColumnType>) -> NSError?
+    
     func create(handle:COpaquePointer, tableName:String, params:Dictionary<String, String>, primaryKey:String, autoincrement:Bool) -> NSError?
 }
 
@@ -68,6 +136,9 @@ protocol SQLiteDelete {
 
 //查询
 protocol SQLiteSelect {
+    //查询数量
+    func count(handle:COpaquePointer, tableName:String, Where:String?) -> Int
+    
     //普通查询
     func select(handle:COpaquePointer, params:String[]?, tableName:String, Where:String?) -> SQLiteResultSet?
     
@@ -99,7 +170,7 @@ extension SQLite : SQLiteUtils {
     func open() -> (COpaquePointer, NSError?) {
         var handle:COpaquePointer = nil
         let dbPath:NSString = path
-
+        
         //如果文件不存在并且代理不为空
         let needCreateTable:Bool = !NSFileManager.defaultManager().fileExistsAtPath(path) && delegate != nil
         
@@ -107,8 +178,8 @@ extension SQLite : SQLiteUtils {
         if result != SQLITE_OK {
             sqlite3_close(handle)
             return (handle, NSError(domain: "打开数据库[\(path)]失败", code: Int(result), userInfo: ["path":path]))
-        } else {
-            delegate!.create(handle)
+        } else if needCreateTable {
+            delegate?.create?(handle, sqlite:self)
         }
         return (handle, nil)
     }
@@ -140,6 +211,7 @@ extension SQLite : SQLiteUtils {
         println("SQL -> \(SQL)")
         let sql:NSString = SQL
         var stmt:COpaquePointer = nil
+        //sqlite3_exec(handle,sql.UTF8String,nil,nil,nil)
         var result:CInt = sqlite3_prepare_v2(handle, sql.UTF8String, -1, &stmt, nil)
         if result != SQLITE_OK {
             sqlite3_finalize(stmt)
@@ -159,14 +231,49 @@ extension SQLite : SQLiteUtils {
 
 //创建
 extension SQLite : SQLiteCreate {
+    func create(handle:COpaquePointer, tableName:String, params:Array<SQLiteColumnType>) -> NSError? {
+        var paramString = ""
+        var first:Bool = true
+
+        for column in params {
+            if !first {
+                paramString += ", "
+            }
+            first = false
+            switch column {
+            case let .SQL_Bool (name, state) :
+                paramString += "\"\(name)\" \(column.name)\(state.name)"
+            case let .SQL_Int (name, state) :
+                paramString += "\"\(name)\" \(column.name)\(state.name)"
+            case let .SQL_UInt (name, state) :
+                paramString += "\"\(name)\" \(column.name)\(state.name)"
+            case let .SQL_Float (name, state) :
+                paramString += "\"\(name)\" \(column.name)\(state.name)"
+            case let .SQL_Double (name, state) :
+                paramString += "\"\(name)\" \(column.name)\(state.name)"
+            case let .SQL_String (name, state) :
+                paramString += "\"\(name)\" \(column.name)\(state.name)"
+            case let .SQL_Date (name, state) :
+                paramString += "\"\(name)\" \(column.name)\(state.name)"
+            case let .SQL_Data (name, state) :
+                paramString += "\"\(name)\" \(column.name)\(state.name)"
+            case let .SQL_Null (name, state) :
+                paramString += "\"\(name)\" \(column.name)"
+            }
+        }
+        
+        let sql = "CREATE TABLE IF NOT EXISTS \"\(tableName)\" (\(paramString))"
+        return execute(handle, SQL:sql)
+    }
+    
     func create(handle:COpaquePointer, tableName:String, params:Dictionary<String,String>, primaryKey:String, autoincrement:Bool) -> NSError? {
         var paramString = ""
-        var frist:Bool = true
+        var first:Bool = true
         for (key,value) in params {
-            if !frist {
+            if !first {
                 paramString += ", "
-                frist = false
             }
+            first = false
             paramString += "\"\(key)\" \(value)"
             if key == primaryKey {
                 paramString += " PRIMARY KEY"
@@ -185,12 +292,12 @@ extension SQLite : SQLiteCreate {
 extension SQLite : SQLiteUpdate {
     func update(handle:COpaquePointer, tableName:String, set params:Dictionary<String, Any>, Where:String?) -> NSError? {
         var paramString = ""
-        var frist:Bool = true
+        var first:Bool = true
         for (key,value) in params {
-            if !frist {
+            if !first {
                 paramString += " AND "
-                frist = false
             }
+            first = false
             paramString += "\"\(key)\" = \"\(value)\""
         }
         if let end = Where {
@@ -204,12 +311,19 @@ extension SQLite : SQLiteUpdate {
 //插入
 extension SQLite : SQLiteInsert {
     func insert(handle:COpaquePointer, tableName:String, params:Dictionary<String, Any>) -> NSError? {
-        let datas:NSDictionary = params
-        let keys:NSArray = datas.allKeys
-        let values:NSArray = datas.allValues
-        let keyString = keys.componentsJoinedByString("\", \"")
-        let valueString = values.componentsJoinedByString("\", \"")
-        let sql = "INSERT OR REPLACE INTO \(tableName) (\"\(keyString)\") values(\"\(valueString)\")"
+        var keyString = ""
+        var valueString = ""
+        var first:Bool = true
+        for (key,value) in params {
+            if !first {
+                keyString += ", "
+                valueString += ", "
+            }
+            first = false
+            keyString += "\"\(key)\""
+            valueString += "\"\(value)\""
+        }
+        let sql = "INSERT OR REPLACE INTO \(tableName) (\(keyString)) values(\(valueString))"
         return execute(handle, SQL:sql)
     }
 }
@@ -227,6 +341,21 @@ extension SQLite : SQLiteDelete {
 
 //查询
 extension SQLite : SQLiteSelect {
+    //查询数量
+    func count(handle:COpaquePointer, tableName:String, Where:String?) -> Int {
+        var sql = "SELECT count(*) FROM \(tableName)"
+        if let end = Where {
+            sql += " WHERE \(end)"
+        }
+        var count:Int = 0
+        if let rs = query(handle, SQL: sql) {
+            if rs.next {
+                count = Int(sqlite3_column_int(rs.stmt, 0))
+            }
+            rs.close()
+        }
+        return count
+    }
     //普通查询
     func select(handle:COpaquePointer, params:String[]?, tableName:String, Where:String?) -> SQLiteResultSet? {
         var sql:String = "SELECT "
@@ -252,12 +381,12 @@ extension SQLite : SQLiteSelect {
             sql += "*"
         }
         var paramString = ""
-        var frist:Bool = true
+        var first:Bool = true
         for (key,value) in tables {
-            if !frist {
+            if !first {
                 paramString += ", "
-                frist = false
             }
+            first = false
             paramString += "\(value) \(key)"
         }
         if let end:String = Where {
@@ -270,7 +399,7 @@ extension SQLite : SQLiteSelect {
 }
 
 class SQLiteResultSet: NSObject {
-    let stmt:COpaquePointer = nil
+    var stmt:COpaquePointer = nil
     let columnCount:Int = 0
     let columnNames:NSArray
     init (stmt:COpaquePointer) {
@@ -281,8 +410,9 @@ class SQLiteResultSet: NSObject {
         for i:CInt in 0..length {
             let name:CString = sqlite3_column_name(stmt,i)
             columns += String.fromCString(name)
+            //println(name);
         }
-        columnNames = columns
+        columnNames = NSArray(array: columns)
     }
     deinit {
         if stmt {
@@ -291,14 +421,10 @@ class SQLiteResultSet: NSObject {
     }
     
     var next:Bool {
-    get {
         return sqlite3_step(stmt) == SQLITE_ROW
     }
-    }
     var row:Int {
-    get {
         return Int(sqlite3_data_count(stmt))
-    }
     }
 }
 
@@ -309,13 +435,16 @@ extension SQLiteResultSet : SQLiteRowSet {
     }
     func close() {
         sqlite3_finalize(stmt)
+        stmt = nil
     }
     func getDictionary() -> Dictionary<String, Any> {
+        //sqlite3_column_table_name(stmt, index) 获取表名称
         var dict:Dictionary<String, Any> = [:]
         for i in 0..columnNames.count {
             let index = CInt(i)
             let type = sqlite3_column_type(stmt, index);
             let key:String = columnNames[i] as String
+            //println("key:\(key)")
             switch type {
             case SQLITE_INTEGER:
                 dict[key] = Int(sqlite3_column_int(stmt, index))
@@ -384,3 +513,64 @@ extension SQLiteResultSet : SQLiteRowSet {
         return format.dateFromString(date)
     }
 }
+
+
+
+enum SQLiteColumnState : Int {
+    case SQL_Default = 0
+    case SQL_PrimaryKey
+    case SQL_PrimaryKeyAutoincrement
+    case SQL_Autoincrement
+    case SQL_NotNull
+    var name:String {
+        switch self {
+        case .SQL_PrimaryKey :
+            return " PRIMARY KEY"
+        case .SQL_PrimaryKeyAutoincrement :
+            return " PRIMARY KEY AUTOINCREMENT"
+        case .SQL_Autoincrement :
+            return " AUTOINCREMENT"
+        case .SQL_NotNull :
+            return " NOT NULL"
+        default :
+            return ""
+        }
+    }
+}
+
+enum SQLiteColumnType {
+    case SQL_Bool (String ,SQLiteColumnState)
+    case SQL_Int (String ,SQLiteColumnState)
+    case SQL_UInt (String ,SQLiteColumnState)
+    case SQL_Float (String ,SQLiteColumnState)
+    case SQL_Double (String ,SQLiteColumnState)
+    case SQL_String (String ,SQLiteColumnState)
+    case SQL_Date (String ,SQLiteColumnState)
+    case SQL_Data (String ,SQLiteColumnState)
+    case SQL_Null (String ,SQLiteColumnState)
+    
+    var name:String {
+        switch self {
+        case .SQL_Bool :
+            return "BOOL"
+        case .SQL_Int :
+            fallthrough
+        case .SQL_UInt :
+            return "INTEGER"
+        case .SQL_Float :
+            return "FLOAT"
+        case .SQL_Double :
+            return "DOUBLE"
+        case .SQL_String :
+            return "TEXT"
+        case .SQL_Date :
+            return "DATETIME"
+        case .SQL_Data :
+            return "BLOB"
+        case .SQL_Null :
+            return "NULL"
+        }
+    }
+}
+
+// @asmname("sqlite3_exec") func sqlite3_execute(COpaquePointer,CString,COpaquePointer,AnyObject,COpaquePointer) -> CInt
