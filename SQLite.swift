@@ -73,6 +73,11 @@
 //
 
 
+@asmname("sqlite3_exec") func sqlite3_execute(COpaquePointer,CString,CFunctionPointer<Void>,COpaquePointer,AutoreleasingUnsafePointer<CString>) -> CInt
+@asmname("sqlite3_bind_blob") func sqlite3_bind_data(COpaquePointer,CInt,ConstUnsafePointer<()>,CInt,COpaquePointer) -> CInt
+@asmname("sqlite3_bind_text") func sqlite3_bind_string(COpaquePointer,CInt,CString,CInt,COpaquePointer) -> CInt
+//@asmname("sqlite3_column_table_name") func sqlite3_column_table_title(COpaquePointer,CInt) -> CString
+//sqlite3_column_table_name
 import Foundation
 
 //结果集
@@ -99,19 +104,22 @@ protocol SQLiteUtils {
     //执行 SQL 语句
     func execute(handle:COpaquePointer, SQL:String) -> NSError?
     //执行 SQL 查询语句
-    func query(handle:COpaquePointer, SQL:String) -> SQLiteResultSet?
+    func query(handle:COpaquePointer, SQL:String) -> SQLite.ResultSet?
     //获取最后出错信息
-    func lastErrorString(handle:COpaquePointer) -> String
+    func lastErrorString(handle:COpaquePointer) -> String!
 }
 
 //代理 @objc 表示可选
 @objc protocol SQLiteDelegate {
     @optional func create(handle:COpaquePointer, sqlite:SQLite)      //<-需要创建所有的表
+    @optional func log(log:String)
+//    @optional func error(log:String)
 }
 
 //创建
 protocol SQLiteCreate {
-    func create(handle:COpaquePointer, tableName:String, params:Array<SQLiteColumnType>) -> NSError?
+
+    func create(handle:COpaquePointer, tableName:String, params:[SQLite.ColumnHeader]) -> NSError?
     
     func create(handle:COpaquePointer, tableName:String, params:Dictionary<String, String>, primaryKey:String, autoincrement:Bool) -> NSError?
 }
@@ -126,7 +134,9 @@ protocol SQLiteInsert {
     //单条插入
     func insert(handle:COpaquePointer, tableName:String, params:Dictionary<String, Any>) -> NSError?
     
-    //批量插入
+    //批量插入 (也可以单条 推荐)
+    func insert(handle:COpaquePointer, tableName:String, columnNames:[String], columnValueFactory:(Int)->[SQLite.ColumnValue]?) -> NSError?
+    func insert(handle:COpaquePointer, tableName:String, params:[SQLite.ColumnValue]) -> NSError?
 }
 
 //删除
@@ -140,10 +150,10 @@ protocol SQLiteSelect {
     func count(handle:COpaquePointer, tableName:String, Where:String?) -> Int
     
     //普通查询
-    func select(handle:COpaquePointer, params:String[]?, tableName:String, Where:String?) -> SQLiteResultSet?
+    func select(handle:COpaquePointer, params:[String]?, tableName:String, Where:String?) -> SQLite.ResultSet?
     
     //联合查询
-    func select(handle:COpaquePointer, params:String[]?, tables:Dictionary<String,String>, Where:String?) -> SQLiteResultSet?
+    func select(handle:COpaquePointer, params:[String]?, tables:Dictionary<String,String>, Where:String?) -> SQLite.ResultSet?
 }
 
 //主函数
@@ -155,6 +165,7 @@ class SQLite: NSObject {
         self.path = path;
         self.delegate = delegate
     }
+    //适合 iOS
     init(name:String, delegate:SQLiteDelegate!) {
         let docDir:AnyObject = NSSearchPathForDirectoriesInDomains(.DocumentDirectory, .UserDomainMask, true)[0]
         self.path = docDir.stringByAppendingPathComponent(name)
@@ -172,7 +183,10 @@ extension SQLite : SQLiteUtils {
         let dbPath:NSString = path
         
         //如果文件不存在并且代理不为空
-        let needCreateTable:Bool = !NSFileManager.defaultManager().fileExistsAtPath(path) && delegate != nil
+        var needCreateTable:Bool = false
+        if let sqlDelegate = delegate {
+            needCreateTable = !NSFileManager.defaultManager().fileExistsAtPath(path)
+        }
         
         let result:CInt = sqlite3_open(dbPath.UTF8String, &handle)
         if result != SQLITE_OK {
@@ -180,6 +194,8 @@ extension SQLite : SQLiteUtils {
             return (handle, NSError(domain: "打开数据库[\(path)]失败", code: Int(result), userInfo: ["path":path]))
         } else if needCreateTable {
             delegate?.create?(handle, sqlite:self)
+        } else {
+            //assert(delegate == nil, message: "打开数据库[\(path)]失败")
         }
         return (handle, nil)
     }
@@ -193,11 +209,11 @@ extension SQLite : SQLiteUtils {
         }
         return nil
     }
-    func lastErrorString(handle:COpaquePointer) -> String {
+    func lastErrorString(handle:COpaquePointer) -> String! {
         return String.fromCString(sqlite3_errmsg(handle))
     }
-    func query(handle:COpaquePointer, SQL:String) -> SQLiteResultSet? {
-        println("SQL -> \(SQL)")
+    func query(handle:COpaquePointer, SQL:String) -> SQLite.ResultSet? {
+        delegate?.log?(SQL)
         let sql:NSString = SQL
         var stmt:COpaquePointer = nil
         var result:CInt = sqlite3_prepare_v2(handle, sql.UTF8String, -1, &stmt, nil)
@@ -205,33 +221,24 @@ extension SQLite : SQLiteUtils {
             sqlite3_finalize(stmt)
             return nil
         }
-        return SQLiteResultSet(stmt: stmt);
+        return SQLite.ResultSet(stmt: stmt);
     }
     func execute(handle:COpaquePointer, SQL:String) -> NSError? {
-        println("SQL -> \(SQL)")
+        delegate?.log?(SQL)
         let sql:NSString = SQL
-        var stmt:COpaquePointer = nil
-        //sqlite3_exec(handle,sql.UTF8String,nil,nil,nil)
-        var result:CInt = sqlite3_prepare_v2(handle, sql.UTF8String, -1, &stmt, nil)
+        var result:CInt = sqlite3_execute(handle,sql.UTF8String,nil,nil,nil)
         if result != SQLITE_OK {
-            sqlite3_finalize(stmt)
             let error = String.fromCString(sqlite3_errmsg(handle))
-            return NSError(domain: "EXEC SQL[\(SQL)]ERROR \(error)", code: Int(result), userInfo: ["path":path,"sql":SQL])
+            return NSError(domain: "QUERY SQL ERROR [\(SQL)] \(error)", code: Int(result), userInfo: ["path":path,"sql":SQL])
         }
-        result = sqlite3_step(stmt)
-        if result != SQLITE_OK && result != SQLITE_DONE {
-            sqlite3_finalize(stmt)
-            let error = String.fromCString(sqlite3_errmsg(handle))
-            return NSError(domain: "STEP SQL[\(SQL)]ERROR \(error)", code: Int(result), userInfo: ["path":path,"sql":SQL])
-        }
-        sqlite3_finalize(stmt)
         return nil
     }
 }
 
 //创建
 extension SQLite : SQLiteCreate {
-    func create(handle:COpaquePointer, tableName:String, params:Array<SQLiteColumnType>) -> NSError? {
+    
+    func create(handle:COpaquePointer, tableName:String, params:[SQLite.ColumnHeader]) -> NSError? {
         var paramString = ""
         var first:Bool = true
 
@@ -266,6 +273,7 @@ extension SQLite : SQLiteCreate {
         return execute(handle, SQL:sql)
     }
     
+
     func create(handle:COpaquePointer, tableName:String, params:Dictionary<String,String>, primaryKey:String, autoincrement:Bool) -> NSError? {
         var paramString = ""
         var first:Bool = true
@@ -326,6 +334,114 @@ extension SQLite : SQLiteInsert {
         let sql = "INSERT OR REPLACE INTO \(tableName) (\(keyString)) values(\(valueString))"
         return execute(handle, SQL:sql)
     }
+
+    func insert(handle:COpaquePointer, tableName:String, columnNames:[String], columnValueFactory:(Int)->[SQLite.ColumnValue]?) -> NSError? {
+        var keyString = ""
+        var valueString = ""
+        
+        var first:Bool = true
+        for columns in columnNames {
+            if !first {
+                keyString += ", "
+                valueString += ", "
+            }
+            first = false
+            keyString += "\"\(columns)\""
+            valueString += "?"
+        }
+        //创建事务
+        var queue:NSString = "BEGIN TRANSACTION"
+        sqlite3_execute(handle, queue.UTF8String ,nil,nil,nil)
+        
+        //获取插入句柄绑定
+        let SQL = "INSERT OR REPLACE INTO \(tableName) (\(keyString)) values(\(valueString))"
+        delegate?.log?("SQL -> \(SQL)")
+        let sql:NSString = SQL
+        var stmt:COpaquePointer = nil
+        var result:CInt = sqlite3_prepare_v2(handle, sql.UTF8String, -1, &stmt, nil)
+        
+        if result != SQLITE_OK {
+            queue = "ROLLBACK TRANSACTION"
+            sqlite3_finalize(stmt)
+            sqlite3_execute(handle, queue.UTF8String ,nil,nil,nil)
+            return NSError(domain: "插入数据错误", code: Int(result), userInfo:["sql":SQL])
+        }
+
+        let length = sqlite3_bind_parameter_count(stmt)
+        let columns = NSArray(array: columnNames)
+        
+        var hasError = false
+        var error:NSError? = nil
+        
+        var i = 0
+        while let columnValues = columnValueFactory(i++) {
+            var flag:CInt = 0
+            for columnValue in columnValues {
+                let (type,key,result) = columnValue.value
+                let index = CInt(columns.indexOfObject(key)) + 1
+                if index > length || index == 0 {
+                    delegate?.log?("错误并跳过本组数据,因为给字段[\(key)]绑定值[\(result)]失败,字段名无效")
+                    flag = SQLITE_MISUSE //错误的使用函数
+                    break;
+                }
+                switch type {
+                case SQLITE_INTEGER:
+                    let value:Int = result as Int
+                    flag = sqlite3_bind_int(stmt,CInt(index),CInt(value))
+                case SQLITE_FLOAT:
+                    let value:Double = result as Double
+                    flag = sqlite3_bind_double(stmt,CInt(index),CDouble(value))
+                case SQLITE_TEXT:
+                    let text:NSString = result as String
+                    flag = sqlite3_bind_string(stmt,CInt(index),text.UTF8String,CInt(text.length),nil)
+                case SQLITE_BLOB:
+                    let data:NSData = result as NSData
+                    flag = sqlite3_bind_data(stmt,CInt(index),data.bytes,CInt(data.length),nil)
+                default://SQLITE_NULL:
+                    flag = sqlite3_bind_null(stmt,CInt(index))
+                }
+                if flag != SQLITE_OK {
+                    let error = String.fromCString(sqlite3_errmsg(handle))
+                    delegate?.log?("错误并跳过本组数据,因为给字段[\(key)]绑定值[\(result)]失败 ERROR \(error)")
+                    break;
+                }
+            }
+            if flag == SQLITE_OK {
+                result = sqlite3_step(stmt)
+                if result != SQLITE_OK && result != SQLITE_DONE {
+                    hasError = true
+                    let errormsg = String.fromCString(sqlite3_errmsg(handle))
+                    error = NSError(domain: "严重错误并回滚插入的数据 STEP SQL[\(SQL)]ERROR \(errormsg)", code: Int(result), userInfo:["sql":SQL])
+                    delegate?.log?("严重错误并回滚插入的数据 STEP SQL[\(SQL)]ERROR \(errormsg) result:\(result)")
+                    break
+                } else {    // <- 否则数据写入成功
+                    sqlite3_clear_bindings(stmt)
+                    sqlite3_reset(stmt)
+                }
+            } else {        // <- 否则数据绑定失败开始下一组
+                sqlite3_clear_bindings(stmt)
+            }
+            
+        }
+        sqlite3_finalize(stmt)
+        queue = hasError ? "ROLLBACK TRANSACTION" : "COMMIT TRANSACTION"
+        sqlite3_execute(handle, queue.UTF8String ,nil,nil,nil)
+        return error
+    }
+    
+    //单条插入
+    func insert(handle:COpaquePointer, tableName:String, params:[SQLite.ColumnValue]) -> NSError? {
+        
+        var columnNames:[String] = []
+        for columns in params {
+            columnNames += columns.name
+        }
+        return insert(handle, tableName: tableName,columnNames: columnNames){
+            index in
+            return index > 0 ? nil : params
+        }
+    }
+
 }
 
 //删除
@@ -357,7 +473,7 @@ extension SQLite : SQLiteSelect {
         return count
     }
     //普通查询
-    func select(handle:COpaquePointer, params:String[]?, tableName:String, Where:String?) -> SQLiteResultSet? {
+    func select(handle:COpaquePointer, params:[String]?, tableName:String, Where:String?) -> SQLite.ResultSet? {
         var sql:String = "SELECT "
         if let array:NSArray = params {
             sql += array.componentsJoinedByString(", ")
@@ -373,7 +489,7 @@ extension SQLite : SQLiteSelect {
     }
     
     //联合查询
-    func select(handle:COpaquePointer, params:String[]?, tables:Dictionary<String,String>, Where:String?) -> SQLiteResultSet? {
+    func select(handle:COpaquePointer, params:[String]?, tables:Dictionary<String,String>, Where:String?) -> SQLite.ResultSet? {
         var sql:String = "SELECT "
         if let array:NSArray = params {
             sql += array.componentsJoinedByString(", ")
@@ -398,37 +514,167 @@ extension SQLite : SQLiteSelect {
     }
 }
 
-class SQLiteResultSet: NSObject {
-    var stmt:COpaquePointer = nil
-    let columnCount:Int = 0
-    let columnNames:NSArray
-    init (stmt:COpaquePointer) {
-        self.stmt = stmt
-        let length = sqlite3_column_count(stmt);
-        var columns:String[] = []
-        columnCount = Int(length)
-        for i:CInt in 0..length {
-            let name:CString = sqlite3_column_name(stmt,i)
-            columns += String.fromCString(name)
-            //println(name);
+extension SQLite {
+    
+    //查询结果集
+    class ResultSet: NSObject {
+        var stmt:COpaquePointer = nil
+        let columnCount:Int = 0
+        let columnNames:NSArray
+        init (stmt:COpaquePointer) {
+            self.stmt = stmt
+            let length = sqlite3_column_count(stmt);
+            var columns:[String] = []
+            columnCount = Int(length)
+            for i:CInt in 0..<length {
+                //let tableName = String.fromCString(sqlite3_column_table_name(stmt, i))
+                
+                let name:CString = sqlite3_column_name(stmt,i)
+                columns += String.fromCString(name)!
+            }
+            columnNames = NSArray(array: columns)
         }
-        columnNames = NSArray(array: columns)
-    }
-    deinit {
-        if stmt {
-            sqlite3_finalize(stmt)
+        deinit {
+            if stmt {
+                sqlite3_finalize(stmt)
+            }
+        }
+        
+        var next:Bool {
+        return sqlite3_step(stmt) == SQLITE_ROW
+        }
+        var row:Int {
+        return Int(sqlite3_data_count(stmt))
         }
     }
     
-    var next:Bool {
-        return sqlite3_step(stmt) == SQLITE_ROW
+    //头附加状态
+    enum ColumnState : Int {
+        case SQL_Default = 0
+        case SQL_PrimaryKey
+        case SQL_PrimaryKeyAutoincrement
+        case SQL_Autoincrement
+        case SQL_NotNull
+        var name:String {
+        switch self {
+        case .SQL_PrimaryKey :
+            return " PRIMARY KEY"
+        case .SQL_PrimaryKeyAutoincrement :
+            return " PRIMARY KEY AUTOINCREMENT"
+        case .SQL_Autoincrement :
+            return " AUTOINCREMENT"
+        case .SQL_NotNull :
+            return " NOT NULL"
+        default :
+            return ""
+            }
+        }
     }
-    var row:Int {
-        return Int(sqlite3_data_count(stmt))
+    
+    //头本体
+    enum ColumnHeader {
+        case SQL_Bool (String ,SQLite.ColumnState)
+        case SQL_Int (String ,SQLite.ColumnState)
+        case SQL_UInt (String ,SQLite.ColumnState)
+        case SQL_Float (String ,SQLite.ColumnState)
+        case SQL_Double (String ,SQLite.ColumnState)
+        case SQL_String (String ,SQLite.ColumnState)
+        case SQL_Date (String ,SQLite.ColumnState)
+        case SQL_Data (String ,SQLite.ColumnState)
+        case SQL_Null (String ,SQLite.ColumnState)
+        
+        var name:String {
+        switch self {
+        case .SQL_Bool :
+            return "BOOL"
+        case .SQL_Int :
+            fallthrough
+        case .SQL_UInt :
+            return "INTEGER"
+        case .SQL_Float :
+            return "FLOAT"
+        case .SQL_Double :
+            return "DOUBLE"
+        case .SQL_String :
+            return "TEXT"
+        case .SQL_Date :
+            return "DATETIME"
+        case .SQL_Data :
+            return "BLOB"
+        case .SQL_Null :
+            return "NULL"
+            }
+        }
     }
+    
+    enum ColumnValue {
+        case SQL_Bool (String ,Bool)
+        case SQL_Int (String ,Int)
+        case SQL_UInt (String ,UInt)
+        case SQL_Float (String ,Float)
+        case SQL_Double (String ,Double)
+        case SQL_String (String ,String)
+        case SQL_Date (String ,NSDate)
+        case SQL_Data (String ,NSData)
+        case SQL_Null (String)
+        
+        //返回数据库类型和相应转化过的值
+        var name:String {
+        switch self {
+        case .SQL_Bool  (let key, _):
+            return key
+        case .SQL_Int   (let key, _):
+            return key
+        case .SQL_UInt  (let key, _):
+            return key
+        case .SQL_Float (let key, _):
+            return key
+        case .SQL_Double(let key, _):
+            return key
+        case .SQL_String(let key, _):
+            return key
+        case .SQL_Date  (let key, _):
+            return key
+        case .SQL_Data  (let key, _):
+            return key
+        case .SQL_Null  (let key):
+            return key
+            }
+            
+        }
+        
+        var value:(CInt, String, Any!) {
+        switch self {
+        case let .SQL_Bool  (key, result):
+            return (SQLITE_INTEGER, key, Int(result))
+        case let .SQL_Int   (key, result):
+            return (SQLITE_INTEGER, key, result)
+        case let .SQL_UInt  (key, result):
+            return (SQLITE_INTEGER, key, result)
+        case let .SQL_Float (key, result):
+            return (SQLITE_FLOAT  , key, Double(result))
+        case let .SQL_Double(key, result):
+            return (SQLITE_FLOAT  , key, result)
+        case let .SQL_String(key, result):
+            return (SQLITE_TEXT   , key, result)
+        case let .SQL_Date  (key, result):
+            //allow Natural Language
+            let formater = NSDateFormatter()
+            formater.dateFormat = "yyyy-MM-dd HH:mm:ss"
+            //formater.calendar = NSCalendar.currentCalendar()
+            return (SQLITE_TEXT   , key, formater.stringFromDate(result))
+        case let .SQL_Data  (key, result):
+            return (SQLITE_BLOB   , key, result)
+        case let .SQL_Null  (key):
+            return (SQLITE_NULL   , key, nil)
+            }
+        }
+    }
+    // <- 自定义类型枚举结束
 }
 
-extension SQLiteResultSet : SQLiteRowSet {
+
+extension SQLite.ResultSet : SQLiteRowSet {
     
     func reset() {
         sqlite3_reset(stmt)
@@ -438,28 +684,37 @@ extension SQLiteResultSet : SQLiteRowSet {
         stmt = nil
     }
     func getDictionary() -> Dictionary<String, Any> {
-        //sqlite3_column_table_name(stmt, index) 获取表名称
         var dict:Dictionary<String, Any> = [:]
-        for i in 0..columnNames.count {
+        for i in 0..<columnCount {
             let index = CInt(i)
             let type = sqlite3_column_type(stmt, index);
             let key:String = columnNames[i] as String
-            //println("key:\(key)")
+            var value:Any? = nil
             switch type {
             case SQLITE_INTEGER:
-                dict[key] = Int(sqlite3_column_int(stmt, index))
+                value = Int(sqlite3_column_int(stmt, index))
             case SQLITE_FLOAT:
-                dict[key] = Float(sqlite3_column_double(stmt, index))
+                value = Float(sqlite3_column_double(stmt, index))
             case SQLITE_TEXT:
-                dict[key] = String.fromCString(CString(sqlite3_column_text(stmt, index)))
+                let text:ConstUnsafePointer<UInt8> = sqlite3_column_text(stmt, index)
+                value = String.fromCString(CString(UnsafePointer<UInt8>(text)))
             case SQLITE_BLOB:
-                let data:CConstVoidPointer = sqlite3_column_blob(stmt, index)
+                let data:ConstUnsafePointer<()> = sqlite3_column_blob(stmt, index)
                 let size:CInt = sqlite3_column_bytes(stmt, index)
-                dict[key] = NSData(bytes:data, length: Int(size))
+                value = NSData(bytes:data, length: Int(size))
             case SQLITE_NULL:
                 fallthrough     //下降关键字 执行下一 CASE
             default :
                 break           //什么都不执行
+            }
+            //如果出现重名则
+            if i != columnNames.indexOfObject(key) {
+                //取变量类型
+                //let tableName = String.fromCString(sqlite3_column_table_name(stmt, index))
+                //dict["\(tableName).\(key)"] = value
+                dict["\(key).\(i)"] = value
+            } else {
+                dict[key] = value
             }
         }
         
@@ -490,7 +745,7 @@ extension SQLiteResultSet : SQLiteRowSet {
         if index < 0 {
             return nil
         }
-        let result:CString = CString(sqlite3_column_text(stmt, index))
+        let result:CString = CString(UnsafePointer<UInt8>(sqlite3_column_text(stmt, index)))
         return String.fromCString(result)
     }
     func getData(columnName:String) -> NSData! {
@@ -498,7 +753,7 @@ extension SQLiteResultSet : SQLiteRowSet {
         if index < 0 {
             return nil
         }
-        let data:CConstVoidPointer = sqlite3_column_blob(stmt, index)
+        let data:ConstUnsafePointer<()> = sqlite3_column_blob(stmt, index)
         let size:CInt = sqlite3_column_bytes(stmt, index)
         return NSData(bytes:data, length: Int(size))
     }
@@ -507,70 +762,25 @@ extension SQLiteResultSet : SQLiteRowSet {
         if index < 0 {
             return nil
         }
-        let result:CString = CString(sqlite3_column_text(stmt, index))
-        let date:NSString = String.fromCString(result)
-        let format = NSDateFormatter(dateFormat: "yyyy-MM-dd HH:mm:ss", allowNaturalLanguage: true)
-        return format.dateFromString(date)
-    }
-}
-
-
-
-enum SQLiteColumnState : Int {
-    case SQL_Default = 0
-    case SQL_PrimaryKey
-    case SQL_PrimaryKeyAutoincrement
-    case SQL_Autoincrement
-    case SQL_NotNull
-    var name:String {
-        switch self {
-        case .SQL_PrimaryKey :
-            return " PRIMARY KEY"
-        case .SQL_PrimaryKeyAutoincrement :
-            return " PRIMARY KEY AUTOINCREMENT"
-        case .SQL_Autoincrement :
-            return " AUTOINCREMENT"
-        case .SQL_NotNull :
-            return " NOT NULL"
-        default :
-            return ""
-        }
-    }
-}
-
-enum SQLiteColumnType {
-    case SQL_Bool (String ,SQLiteColumnState)
-    case SQL_Int (String ,SQLiteColumnState)
-    case SQL_UInt (String ,SQLiteColumnState)
-    case SQL_Float (String ,SQLiteColumnState)
-    case SQL_Double (String ,SQLiteColumnState)
-    case SQL_String (String ,SQLiteColumnState)
-    case SQL_Date (String ,SQLiteColumnState)
-    case SQL_Data (String ,SQLiteColumnState)
-    case SQL_Null (String ,SQLiteColumnState)
-    
-    var name:String {
-        switch self {
-        case .SQL_Bool :
-            return "BOOL"
-        case .SQL_Int :
+        let columnType = sqlite3_column_type(stmt, index)
+        
+        switch columnType {
+        case SQLITE_INTEGER:
             fallthrough
-        case .SQL_UInt :
-            return "INTEGER"
-        case .SQL_Float :
-            return "FLOAT"
-        case .SQL_Double :
-            return "DOUBLE"
-        case .SQL_String :
-            return "TEXT"
-        case .SQL_Date :
-            return "DATETIME"
-        case .SQL_Data :
-            return "BLOB"
-        case .SQL_Null :
-            return "NULL"
+        case SQLITE_FLOAT:
+            let time = sqlite3_column_double(stmt, index)
+            return NSDate(timeIntervalSinceReferenceDate: time)
+        case SQLITE_TEXT:
+            let result = CString(UnsafePointer<UInt8>(sqlite3_column_text(stmt, index)))
+            let date = String.fromCString(result)
+            let formater = NSDateFormatter()
+            formater.dateFormat = "yyyy-MM-dd HH:mm:ss"
+            //formater.calendar = NSCalendar.currentCalendar()
+            return formater.dateFromString(date)
+        default:
+            return nil
         }
+        
     }
 }
 
-// @asmname("sqlite3_exec") func sqlite3_execute(COpaquePointer,CString,COpaquePointer,AnyObject,COpaquePointer) -> CInt
