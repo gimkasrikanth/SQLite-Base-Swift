@@ -35,11 +35,18 @@ SQLite-Base-Swift
             sqlite.insert(handle, tableName: "Computer", params:["brand":"Hp", "cpu":1])
             sqlite.insert(handle, tableName: "Computer", params:["brand":"Dell", "cpu":2])
             
-            sqlite.insert(handle, tableName: "Preson", params:["name":"lzl", "computer":1])
-            sqlite.insert(handle, tableName: "Preson", params:["name":"lc", "computer":1])
-            sqlite.insert(handle, tableName: "Preson", params:["name":"jc", "computer":1])
-            sqlite.insert(handle, tableName: "Preson", params:["name":"gd", "computer":2])
-            
+            //批量插入
+            let names = ["lzl","lc","jc","gd"]
+            sqlite.insert(handle, tableName: "Preson", columnNames:["name","computer"]){
+                index in
+                if index < names.count {
+                    return [.SQL_String ("name"     ,names[index]),
+                            .SQL_Int    ("computer" ,1)]
+                } else {
+                    return nil
+                }
+            }
+
             println("插入完成")
             
         }
@@ -48,6 +55,8 @@ SQLite-Base-Swift
 ///////////////////////////////////////////////////////////////////////////////////////////////////////
 
   在需要查询的时候代码如下
+    extension ViewController : SQLiteDelegate {
+
 
   let sqlite = SQLite(path:"/Users/apple/Documents/test.sqlite",delegate:self)
 
@@ -66,4 +75,4 @@ SQLite-Base-Swift
   } else {
       println("查询失败")
   }
-
+}
