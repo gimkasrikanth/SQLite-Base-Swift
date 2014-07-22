@@ -73,9 +73,9 @@
 //
 
 
-@asmname("sqlite3_exec") func sqlite3_execute(COpaquePointer,CString,CFunctionPointer<Void>,COpaquePointer,AutoreleasingUnsafePointer<CString>) -> CInt
+@asmname("sqlite3_exec") func sqlite3_execute(COpaquePointer,ConstUnsafePointer<CChar>,CFunctionPointer<Void>,COpaquePointer,AutoreleasingUnsafePointer<ConstUnsafePointer<CChar>>) -> CInt
 @asmname("sqlite3_bind_blob") func sqlite3_bind_data(COpaquePointer,CInt,ConstUnsafePointer<()>,CInt,COpaquePointer) -> CInt
-@asmname("sqlite3_bind_text") func sqlite3_bind_string(COpaquePointer,CInt,CString,CInt,COpaquePointer) -> CInt
+@asmname("sqlite3_bind_text") func sqlite3_bind_string(COpaquePointer,CInt,ConstUnsafePointer<CChar>,CInt,COpaquePointer) -> CInt
 //@asmname("sqlite3_column_table_name") func sqlite3_column_table_title(COpaquePointer,CInt) -> CString
 //sqlite3_column_table_name
 import Foundation
@@ -84,7 +84,7 @@ import Foundation
 protocol SQLiteRowSet {
     func reset()
     func close()
-    func getDictionary() -> Dictionary<String,Any>
+    func getDictionary() -> [String:Any]
     func getUInt(columnName:String) -> UInt!
     func getInt(columnName:String) -> Int!
     func getFloat(columnName:String) -> Float!
@@ -111,8 +111,8 @@ protocol SQLiteUtils {
 
 //代理 @objc 表示可选
 @objc protocol SQLiteDelegate {
-    @optional func create(handle:COpaquePointer, sqlite:SQLite)      //<-需要创建所有的表
-    @optional func log(log:String)
+    optional func create(handle:COpaquePointer, sqlite:SQLite)      //<-需要创建所有的表
+    optional func log(log:String)
 //    @optional func error(log:String)
 }
 
@@ -121,18 +121,18 @@ protocol SQLiteCreate {
 
     func create(handle:COpaquePointer, tableName:String, params:[SQLite.ColumnHeader]) -> NSError?
     
-    func create(handle:COpaquePointer, tableName:String, params:Dictionary<String, String>, primaryKey:String, autoincrement:Bool) -> NSError?
+    func create(handle:COpaquePointer, tableName:String, params:[String:String], primaryKey:String, autoincrement:Bool) -> NSError?
 }
 
 //改变
 protocol SQLiteUpdate {
-    func update(handle:COpaquePointer, tableName:String, set params:Dictionary<String, Any>, Where:String?) -> NSError?
+    func update(handle:COpaquePointer, tableName:String, set params:[String:Any], Where:String?) -> NSError?
 }
 
 //增加
 protocol SQLiteInsert {
     //单条插入
-    func insert(handle:COpaquePointer, tableName:String, params:Dictionary<String, Any>) -> NSError?
+    func insert(handle:COpaquePointer, tableName:String, params:[String:Any]) -> NSError?
     
     //批量插入 (也可以单条 推荐)
     func insert(handle:COpaquePointer, tableName:String, columnNames:[String], columnValueFactory:(Int)->[SQLite.ColumnValue]?) -> NSError?
@@ -153,7 +153,7 @@ protocol SQLiteSelect {
     func select(handle:COpaquePointer, params:[String]?, tableName:String, Where:String?) -> SQLite.ResultSet?
     
     //联合查询
-    func select(handle:COpaquePointer, params:[String]?, tables:Dictionary<String,String>, Where:String?) -> SQLite.ResultSet?
+    func select(handle:COpaquePointer, params:[String]?, tables:[String:String], Where:String?) -> SQLite.ResultSet?
 }
 
 //主函数
@@ -274,7 +274,7 @@ extension SQLite : SQLiteCreate {
     }
     
 
-    func create(handle:COpaquePointer, tableName:String, params:Dictionary<String,String>, primaryKey:String, autoincrement:Bool) -> NSError? {
+    func create(handle:COpaquePointer, tableName:String, params:[String:String], primaryKey:String, autoincrement:Bool) -> NSError? {
         var paramString = ""
         var first:Bool = true
         for (key,value) in params {
@@ -298,7 +298,7 @@ extension SQLite : SQLiteCreate {
 
 //更新
 extension SQLite : SQLiteUpdate {
-    func update(handle:COpaquePointer, tableName:String, set params:Dictionary<String, Any>, Where:String?) -> NSError? {
+    func update(handle:COpaquePointer, tableName:String, set params:[String:Any], Where:String?) -> NSError? {
         var paramString = ""
         var first:Bool = true
         for (key,value) in params {
@@ -318,7 +318,7 @@ extension SQLite : SQLiteUpdate {
 
 //插入
 extension SQLite : SQLiteInsert {
-    func insert(handle:COpaquePointer, tableName:String, params:Dictionary<String, Any>) -> NSError? {
+    func insert(handle:COpaquePointer, tableName:String, params:[String:Any]) -> NSError? {
         var keyString = ""
         var valueString = ""
         var first:Bool = true
@@ -489,7 +489,7 @@ extension SQLite : SQLiteSelect {
     }
     
     //联合查询
-    func select(handle:COpaquePointer, params:[String]?, tables:Dictionary<String,String>, Where:String?) -> SQLite.ResultSet? {
+    func select(handle:COpaquePointer, params:[String]?, tables:[String:String], Where:String?) -> SQLite.ResultSet? {
         var sql:String = "SELECT "
         if let array:NSArray = params {
             sql += array.componentsJoinedByString(", ")
@@ -529,7 +529,7 @@ extension SQLite {
             for i:CInt in 0..<length {
                 //let tableName = String.fromCString(sqlite3_column_table_name(stmt, i))
                 
-                let name:CString = sqlite3_column_name(stmt,i)
+                let name:ConstUnsafePointer<CChar> = sqlite3_column_name(stmt,i)
                 columns += String.fromCString(name)!
             }
             columnNames = NSArray(array: columns)
@@ -683,8 +683,8 @@ extension SQLite.ResultSet : SQLiteRowSet {
         sqlite3_finalize(stmt)
         stmt = nil
     }
-    func getDictionary() -> Dictionary<String, Any> {
-        var dict:Dictionary<String, Any> = [:]
+    func getDictionary() -> [String:Any] {
+        var dict:[String:Any] = [:]
         for i in 0..<columnCount {
             let index = CInt(i)
             let type = sqlite3_column_type(stmt, index);
@@ -697,7 +697,7 @@ extension SQLite.ResultSet : SQLiteRowSet {
                 value = Float(sqlite3_column_double(stmt, index))
             case SQLITE_TEXT:
                 let text:ConstUnsafePointer<UInt8> = sqlite3_column_text(stmt, index)
-                value = String.fromCString(CString(UnsafePointer<UInt8>(text)))
+                value = String.fromCString(ConstUnsafePointer<CChar>(text))
             case SQLITE_BLOB:
                 let data:ConstUnsafePointer<()> = sqlite3_column_blob(stmt, index)
                 let size:CInt = sqlite3_column_bytes(stmt, index)
@@ -745,7 +745,7 @@ extension SQLite.ResultSet : SQLiteRowSet {
         if index < 0 {
             return nil
         }
-        let result:CString = CString(UnsafePointer<UInt8>(sqlite3_column_text(stmt, index)))
+        let result = ConstUnsafePointer<CChar>(sqlite3_column_text(stmt, index))
         return String.fromCString(result)
     }
     func getData(columnName:String) -> NSData! {
@@ -771,7 +771,7 @@ extension SQLite.ResultSet : SQLiteRowSet {
             let time = sqlite3_column_double(stmt, index)
             return NSDate(timeIntervalSinceReferenceDate: time)
         case SQLITE_TEXT:
-            let result = CString(UnsafePointer<UInt8>(sqlite3_column_text(stmt, index)))
+            let result = ConstUnsafePointer<CChar>(sqlite3_column_text(stmt, index))
             let date = String.fromCString(result)
             let formater = NSDateFormatter()
             formater.dateFormat = "yyyy-MM-dd HH:mm:ss"
