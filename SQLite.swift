@@ -518,9 +518,9 @@ extension SQLite {
     
     //查询结果集
     class ResultSet: NSObject {
-        var stmt:COpaquePointer = nil
-        let columnCount:Int = 0
-        let columnNames:NSArray
+        private var stmt:COpaquePointer = nil
+        private let columnCount:Int = 0
+        private let columnNames:NSArray
         init (stmt:COpaquePointer) {
             self.stmt = stmt
             let length = sqlite3_column_count(stmt);
@@ -573,15 +573,15 @@ extension SQLite {
     
     //头本体
     enum ColumnHeader {
-        case SQL_Bool (String ,SQLite.ColumnState)
-        case SQL_Int (String ,SQLite.ColumnState)
-        case SQL_UInt (String ,SQLite.ColumnState)
-        case SQL_Float (String ,SQLite.ColumnState)
-        case SQL_Double (String ,SQLite.ColumnState)
-        case SQL_String (String ,SQLite.ColumnState)
-        case SQL_Date (String ,SQLite.ColumnState)
-        case SQL_Data (String ,SQLite.ColumnState)
-        case SQL_Null (String ,SQLite.ColumnState)
+        case SQL_Bool (String ,ColumnState)
+        case SQL_Int (String ,ColumnState)
+        case SQL_UInt (String ,ColumnState)
+        case SQL_Float (String ,ColumnState)
+        case SQL_Double (String ,ColumnState)
+        case SQL_String (String ,ColumnState)
+        case SQL_Date (String ,ColumnState)
+        case SQL_Data (String ,ColumnState)
+        case SQL_Null (String ,ColumnState)
         
         var name:String {
         switch self {
